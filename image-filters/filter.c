@@ -1,14 +1,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #define STB_IMAGE_IMPLEMENTATION // Necesario para la implementación
-#include "stb_image.h"  
+#include "stb-master/stb_image.h"  
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"  
+#include "stb-master/stb_image_write.h"  
 #include <string.h>
-
-
-
-#define SIGMA 6.0  // Standard deviation for Gaussian
 
 typedef struct {
     char filter_name[50]; //stores the name of the filter
@@ -24,6 +20,24 @@ typedef struct {
 
 // Function to parse command-line arguments
 int arg_parser(int argc, char **argv, FilterOptions *options) {
+
+    if (strcmp(argv[1], "-help") == 0){
+        printf("Usage: %s imagename [filter options]\n", argv[0]);
+        printf("Filter options:\n");
+        printf("  -help            : Show this help message.\n");
+        printf("  -bw              : Apply black-and-white filter.\n");
+        printf("  -inverted        : Apply inverted color filter.\n");
+        printf("  -r               : Apply red-channel filter.\n");
+        printf("  -g               : Apply green-channel filter.\n");
+        printf("  -b               : Apply blue-channel filter.\n");
+        printf("  -rgb R G B       : Apply custom RGB filter (values 0-1 for each channel).\n");
+        printf("  -blurr N         : Apply blur filter with grid size N (odd number).\n");
+        printf("  -zoneblurr N X Y : Apply zone blur with grid size N (odd) at coordinates X, Y.\n");
+        printf("  -edge            : Apply edge detection filter.\n");
+        printf("  -unblurr         : Apply unblur filter.\n");
+        exit(0);
+    }
+
     // Ensure mandatory arguments are present
     if (argc < 3) {
         fprintf(stderr, "Usage: %s imagename [filter options]\n", argv[0]);
