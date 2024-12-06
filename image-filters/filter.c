@@ -16,6 +16,7 @@ typedef struct {
     int zone;
     int x;	      // zone blurring x coordinate
     int y;	      // zone blurring y coordinate
+    float edge_factor;
 } FilterOptions;
 
 // Function to parse command-line arguments
@@ -117,9 +118,17 @@ int arg_parser(int argc, char **argv, FilterOptions *options) {
             options->filter = 8; 
         } else if (strcmp(argv[i], "-unblurr") == 0){
             strcpy(options->filter_name, "unblurr");
+            if (argc - 1== ++i){
+                printf("IF argc %i == %i + 1\n", argc, i);
+                options->edge_factor = atof(argv[i]);
+                
+            } else{
+                printf("ELSE argc %i == %i + 1\n", argc, i);
+                options->edge_factor = 1;
+            }
             options->filter = 9; 
         } else {
-            fprintf(stderr, "Error: Unknown flag or argument: %s\n", argv[i]);
+            fprintf(stderr, "Error: Unknown flag or argument %i: %s\n", i, argv[i]);
             return -1;
         }
     }
@@ -294,9 +303,9 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
                     }
                 }
                                 // Normalize and store the resulting pixel color
-                image_w_filter[pixel] = (unsigned char)(sum_r / (total_weight +15));
-                image_w_filter[pixel + 1] = (unsigned char)(sum_g / (total_weight +15));
-                image_w_filter[pixel + 2] = (unsigned char)(sum_b / (total_weight +15));
+                image_w_filter[pixel] = (unsigned char)(sum_r / (total_weight));
+                image_w_filter[pixel + 1] = (unsigned char)(sum_g / (total_weight));
+                image_w_filter[pixel + 2] = (unsigned char)(sum_b / (total_weight));
             } else{
                 unsigned char red = image[pixel];
          	    unsigned char green = image[pixel+1];
@@ -330,6 +339,10 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
                     {-1, -2, -1},
                     { 0,  0,  0},
                     { 1,  2,  1}
+                                        /*
+                    {0, 0, 0},
+                    { 0,  0,  0},
+                    { 0,  0,  0}   */            
                 };
 
                 // Apply Sobel kernel to surrounding pixels
@@ -375,7 +388,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
         }
         break;
         case 9: 
-        float edge_factor = 1.5; // Factor de amplificación de bordes
+        float edge_factor = flags->edge_factor; // Factor de amplificación de bordes
 
         unsigned char* image_edge = (unsigned char*)malloc(width * height * 3);
         if (!image_edge) {
