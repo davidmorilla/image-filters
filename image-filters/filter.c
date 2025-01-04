@@ -17,6 +17,7 @@ typedef struct {
     int x;	      // zone blurring x coordinate
     int y;	      // zone blurring y coordinate
     float edge_factor;
+    float resize_factor; // Scaling factor for resizing
 } FilterOptions;
 
 // Function to parse command-line arguments
@@ -26,6 +27,7 @@ int arg_parser(int argc, char **argv, FilterOptions *options) {
         printf("Usage: %s imagename [filter options]\n", argv[0]);
         printf("Filter options:\n");
         printf("  -help            : Show this help message.\n");
+	printf("  -resize N        : Resize the image by a factor N (0 < N <= 5).\n");
         printf("  -bw              : Apply black-and-white filter.\n");
         printf("  -inverted        : Apply inverted color filter.\n");
         printf("  -r               : Apply red-channel filter.\n");
@@ -127,6 +129,18 @@ int arg_parser(int argc, char **argv, FilterOptions *options) {
                 options->edge_factor = 1;
             }
             options->filter = 9; 
+        } else if (strcmp(argv[i], "-resize") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: -resize flag requires a scaling factor (0 < N <= 5).\n");
+                return -1;
+            }
+            options->resize_factor = atof(argv[++i]);
+            if (options->resize_factor <= 0 || options->resize_factor > 5) {
+                fprintf(stderr, "Error: Scaling factor must be in the range 0 < N <= 5.\n");
+                return -1;
+            }
+            strcpy(options->filter_name, "resize");
+            options->filter = 10; // Special value for resizing
         } else {
             fprintf(stderr, "Error: Unknown flag or argument %i: %s\n", i, argv[i]);
             return -1;
@@ -431,6 +445,69 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
         // Liberar memoria temporal
         free(image_edge);
      break;
+     case 10: // Resizing using bilinear interpolation
+    if (flags->resize_factor <= 0 || flags->resize_factor > 5) {
+        fprintf(stderr, "Error: Resizing factor must be in the range (0 < n <= 5).\n");
+        break;
+    }
+
+    // Calculate new dimensions
+    int new_width = (int)(width * flags->resize_factor);
+    int new_height = (int)(height * flags->resize_factor);
+
+    // Allocate memory for the resized image
+    unsigned char* resized_image = (unsigned char*)malloc(new_width * new_height * channels);
+    if (!resized_image) {
+        fprintf(stderr, "Error: Memory allocation failed for the resized image.\n");
+        break;
+    }
+
+    // Perform bilinear interpolation
+    for (int y = 0; y < new_height; y++) {
+        for (int x = 0; x < new_width; x++) {
+            // Map the pixel in the resized image to the original image
+            float gx = x / flags->resize_factor;
+            float gy = y / flags->resize_factor;
+
+            // Get the integer and fractional parts
+            int gxi = (int)gx;
+            int gyi = (int)gy;
+            float frac_x = gx - gxi;
+            float frac_y = gy - gyi;
+
+            // Ensure indices are within bounds
+            int gxi1 = (gxi + 1 < width) ? gxi + 1 : gxi;
+            int gyi1 = (gyi + 1 < height) ? gyi + 1 : gyi;
+
+            for (int c = 0; c < channels; c++) {
+                // Fetch the four neighboring pixels
+                unsigned char top_left = image[(gyi * width + gxi) * channels + c];
+                unsigned char top_right = image[(gyi * width + gxi1) * channels + c];
+                unsigned char bottom_left = image[(gyi1 * width + gxi) * channels + c];
+                unsigned char bottom_right = image[(gyi1 * width + gxi1) * channels + c];
+
+                // Perform bilinear interpolation
+                float top = top_left + frac_x * (top_right - top_left);
+                float bottom = bottom_left + frac_x * (bottom_right - bottom_left);
+                float value = top + frac_y * (bottom - top);
+
+                // Assign the interpolated value to the new image
+                resized_image[(y * new_width + x) * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
+            }
+        }
+    }
+
+    // Copy resized image data back to the output
+    memcpy(image_w_filter, resized_image, new_width * new_height * channels);
+
+    // Update width and height for the output image
+    width = new_width;
+    height = new_height;
+
+    // Free temporary memory
+    free(resized_image);
+    break;
+
 
         
     }
@@ -457,7 +534,13 @@ int main (int argc, char** argv){
         fprintf(stderr,"Error al cargar la imagen\n");
         return 1;
     }
-
+    int resize_factor = 1;
+    if(flags->filter == 10){
+	resize_factor= flags->resize_factor;
+    }	    
+    width=(int)width*resize_factor;
+    height=(int)height*resize_factor;
+		    
     unsigned char *image_w_filter = (unsigned char *)malloc(width * height * 3);
     process_image(flags, image_name, image, image_w_filter, width, height, channels);
     
