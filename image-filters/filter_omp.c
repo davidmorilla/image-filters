@@ -159,6 +159,7 @@ int arg_parser(int argc, char **argv, FilterOptions *options) {
 
 void process_image (FilterOptions *flags, char * image_name, unsigned char* image, unsigned char* image_w_filter, int width, int height, int channels ){
     float edge_factor;
+
     switch (flags->filter){
         case 0: // blanco y negro
             for (int y = 0; y< height; y++) {
@@ -402,7 +403,8 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
             }
         }
         break;
-        case 9: 
+        case 9:
+
         edge_factor = flags->edge_factor; // Factor de amplificaciÃ³n de bordes
 
         unsigned char* image_edge = (unsigned char*)malloc(width * height * 3);
@@ -458,39 +460,39 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
 	    image_w_filter= (unsigned char *)malloc(new_width * new_height * 3);
 	    
 	    // Perform bilinear interpolation
-	    //#pragma omp parallel for collapse(2)
+	    #pragma omp parallel for collapse(2)
 	    for (int y = 0; y < new_height; y++) {
-		for (int x = 0; x < new_width; x++) {
-		    // Map the pixel in the resized image to the original image
-		    float gx = x / flags->resize_factor;
-		    float gy = y / flags->resize_factor;
+            for (int x = 0; x < new_width; x++) {
+                // Map the pixel in the resized image to the original image
+                float gx = x / flags->resize_factor;
+                float gy = y / flags->resize_factor;
 
-		    // Get the integer and fractional parts
-		    int gxi = (int)gx;
-		    int gyi = (int)gy;
-		    float frac_x = gx - gxi;
-		    float frac_y = gy - gyi;
+                // Get the integer and fractional parts
+                int gxi = (int)gx;
+                int gyi = (int)gy;
+                float frac_x = gx - gxi;
+                float frac_y = gy - gyi;
 
-		    // Ensure indices are within bounds
-		    int gxi1 = (gxi + 1 < width) ? gxi + 1 : gxi;
-		    int gyi1 = (gyi + 1 < height) ? gyi + 1 : gyi;
+                // Ensure indices are within bounds
+                int gxi1 = (gxi + 1 < width) ? gxi + 1 : gxi;
+                int gyi1 = (gyi + 1 < height) ? gyi + 1 : gyi;
 
-		    for (int c = 0; c < channels; c++) {
-		        // Fetch the four neighboring pixels
-		        unsigned char top_left = image[(gyi * width + gxi) * channels + c];
-		        unsigned char top_right = image[(gyi * width + gxi1) * channels + c];
-		        unsigned char bottom_left = image[(gyi1 * width + gxi) * channels + c];
-		        unsigned char bottom_right = image[(gyi1 * width + gxi1) * channels + c];
+                for (int c = 0; c < channels; c++) {
+                    // Fetch the four neighboring pixels
+                    unsigned char top_left = image[(gyi * width + gxi) * channels + c];
+                    unsigned char top_right = image[(gyi * width + gxi1) * channels + c];
+                    unsigned char bottom_left = image[(gyi1 * width + gxi) * channels + c];
+                    unsigned char bottom_right = image[(gyi1 * width + gxi1) * channels + c];
 
-		        // Perform bilinear interpolation
-		        float top = top_left + frac_x * (top_right - top_left);
-		        float bottom = bottom_left + frac_x * (bottom_right - bottom_left);
-		        float value = top + frac_y * (bottom - top);
+                    // Perform bilinear interpolation
+                    float top = top_left + frac_x * (top_right - top_left);
+                    float bottom = bottom_left + frac_x * (bottom_right - bottom_left);
+                    float value = top + frac_y * (bottom - top);
 
-		        // Assign the interpolated value to the new image
-		        image_w_filter[(y * new_width + x) * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
-		    }
-		}
+                    // Assign the interpolated value to the new image
+                    image_w_filter[(y * new_width + x) * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
+                }
+            }
 	    }
 
 
@@ -516,6 +518,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
 
 // BMP File Header (14 bytes)
 // BMP File Header (14 bytes)
+
 #pragma pack(push, 1)
 typedef struct {
     uint16_t bfType;           // File type, should be 0x4D42 ('BM')
@@ -580,24 +583,43 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
     fwrite(&fileHeader, sizeof(BMPFileHeader), 1, file);
     fwrite(&dibHeader, sizeof(BMPDIBHeader), 1, file);
 
-    // Write pixel data with padding
+    // Allocate buffer for the entire image
+    uint8_t *buffer = (uint8_t *)malloc(row_padded * height);
+    if (!buffer) {
+        perror("Could not allocate memory for buffer");
+        fclose(file);
+        return;
+    }
+
+    // Fill the buffer in parallel
+    #pragma omp parallel for
     for (int y = 0; y < height; y++) {
+        uint8_t *row = buffer + y * row_padded; // Pointer to the current row in the buffer
+        #pragma omp parallel for
         for (int x = 0; x < width; x++) {
             uint8_t red = image[(y * width + x) * 3 + 0];   // Red
             uint8_t green = image[(y * width + x) * 3 + 1]; // Green
             uint8_t blue = image[(y * width + x) * 3 + 2];  // Blue
 
-            fwrite(&blue, 1, 1, file);  // BMP stores pixels in BGR format
-            fwrite(&green, 1, 1, file);
-            fwrite(&red, 1, 1, file);
+            row[x * 3 + 0] = blue;   // B
+            row[x * 3 + 1] = green;  // G
+            row[x * 3 + 2] = red;    // R
         }
-        // Write padding bytes
-        uint8_t pad[3] = {0, 0, 0};
-        fwrite(pad, 1, padding, file);
+
+        // Add padding at the end of the row
+        #pragma omp pararell for
+        for (int p = 0; p < padding; p++) {
+            row[width * 3 + p] = 0;
+        }
     }
 
-    // Close the file
+    // Write the buffer to the file
+    fwrite(buffer, row_padded, height, file);
+
+    // Free buffer and close the file
+    free(buffer);
     fclose(file);
+
     printf("Image saved to %s\n", filename);
 }
 
