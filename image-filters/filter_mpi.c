@@ -1,11 +1,13 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <mpi.h> //cabecera mpi
 #define STB_IMAGE_IMPLEMENTATION // Necesario para la implementaciÃ³n
 #include "stb-master/stb_image.h"  
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb-master/stb_image_write.h"  
 #include <string.h>
 #include <stdint.h>
+
 
 typedef struct {
     char filter_name[50]; //stores the name of the filter
@@ -159,7 +161,6 @@ int arg_parser(int argc, char **argv, FilterOptions *options) {
 
 void process_image (FilterOptions *flags, char * image_name, unsigned char* image, unsigned char* image_w_filter, int width, int height, int channels ){
     float edge_factor;
-
     switch (flags->filter){
         case 0: // blanco y negro
             for (int y = 0; y< height; y++) {
@@ -335,7 +336,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
             }
         }
         break;
-        case 8:
+    case 8:
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int pixel = 3 * (y * width + x);
@@ -403,8 +404,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
             }
         }
         break;
-        case 9:
-
+    case 9: 
         edge_factor = flags->edge_factor; // Factor de amplificaciÃ³n de bordes
 
         unsigned char* image_edge = (unsigned char*)malloc(width * height * 3);
@@ -448,20 +448,50 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
         // Liberar memoria temporal
         free(image_edge);
      break;
-     case 10: // Resizing using bilinear interpolation
+    case 10: // Resizing using bilinear interpolation
 	    if (flags->resize_factor <= 0 || flags->resize_factor > 5) {
-		fprintf(stderr, "Error: Resizing factor must be in the range (0 < n <= 5).\n");
-		break;
+            fprintf(stderr, "Error: Resizing factor must be in the range (0 < n <= 5).\n");
+            break;
 	    }
 
 	    // Calculate new dimensions
 	    int new_width = (int)(width * flags->resize_factor);
 	    int new_height = (int)(height * flags->resize_factor);
-	    image_w_filter= (unsigned char *)malloc(new_width * new_height * 3);
-	    
+	    //image_w_filter= (unsigned char *)malloc(new_width * new_height * 3);
+        
+
+        //Get MPI rank and size
+        int world_rank, world_size;
+        MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+        if (world_rank == 0) {
+            image_w_filter = (unsigned char*)malloc(new_width * new_height * 3);
+        }
+
+        // Calculate the number of rows each process will handle
+        int rows_per_process = new_height / world_size;
+
+        // Calculate the starting and ending row for each process
+        int start_row = world_rank * rows_per_process;
+        int end_row = (world_rank + 1) * rows_per_process;
+
+        // Ensure the last process ends at the last row
+        if (world_rank == world_size - 1) {
+            end_row = new_height;
+        }
+        
+        // Allocate local buffer for each process
+        unsigned char* local_image;
+        if (world_rank == world_size - 1) {
+            local_image = (unsigned char*)malloc(new_width * (rows_per_process+ new_height%world_size) * 3);
+        } else {
+            local_image = (unsigned char*)malloc(new_width * rows_per_process * 3);
+        }
+        
+
 	    // Perform bilinear interpolation
-	    #pragma omp parallel for collapse(2)
-	    for (int y = 0; y < new_height; y++) {
+	    for (int y = start_row; y < end_row; y++) {
             for (int x = 0; x < new_width; x++) {
                 // Map the pixel in the resized image to the original image
                 float gx = x / flags->resize_factor;
@@ -490,18 +520,23 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
                     float value = top + frac_y * (bottom - top);
 
                     // Assign the interpolated value to the new image
-                    image_w_filter[(y * new_width + x) * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
+                    local_image[(y - start_row) * new_width * channels + x * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
                 }
             }
 	    }
 
+        // Gather all local images into the final image
+        MPI_Gather(local_image, new_width * rows_per_process * 3, MPI_UNSIGNED_CHAR, image_w_filter, new_width * rows_per_process * 3, MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
+
+        // Free local image buffer
+        free(local_image);
+
 
 	    width = new_width;
 	    height = new_height;
-	    break;
-        
+	    break;  
     }
-        
+
     char image_w_filter_name[100];
     snprintf(image_w_filter_name, sizeof(image_w_filter_name), "%s_filter_%s", image_name, flags->filter_name);
     save_as_bmp(image_w_filter_name, image_w_filter, width, height);
@@ -516,7 +551,6 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
 
 // BMP File Header (14 bytes)
 // BMP File Header (14 bytes)
-
 #pragma pack(push, 1)
 typedef struct {
     uint16_t bfType;           // File type, should be 0x4D42 ('BM')
@@ -570,61 +604,86 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
     dibHeader.biClrUsed = 0;
     dibHeader.biClrImportant = 0;
 
-    // Open the file for writing
-    FILE *file = fopen(filename, "wb");
-    if (!file) {
-        perror("Could not open file");
-        return;
+    // Get MPI rank and size
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+    // Open the file for writing in rank 0
+    FILE *file = NULL;
+    if (world_rank == 0) {
+        file = fopen(filename, "wb");
+        if (!file) {
+            perror("Could not open file");
+            return;
+        }
+
+        // Write headers only once in rank 0
+        fwrite(&fileHeader, sizeof(BMPFileHeader), 1, file);
+        fwrite(&dibHeader, sizeof(BMPDIBHeader), 1, file);
     }
 
-    // Write headers
-    fwrite(&fileHeader, sizeof(BMPFileHeader), 1, file);
-    fwrite(&dibHeader, sizeof(BMPDIBHeader), 1, file);
+    // Calculate the number of rows each process will handle
+    int rows_per_process = height / world_size;
+    int remaining_rows = height % world_size;
 
-    // Allocate buffer for the entire image
-    uint8_t *buffer = (uint8_t *)malloc(row_padded * height);
-    if (!buffer) {
-        perror("Could not allocate memory for buffer");
-        fclose(file);
-        return;
-    }
+    // Calculate the starting and ending row for each process
+    int start_row = world_rank * rows_per_process + (world_rank < remaining_rows ? world_rank : remaining_rows);
+    int end_row = start_row + rows_per_process + (world_rank < remaining_rows ? 1 : 0);
 
-    // Fill the buffer in parallel
-    #pragma omp parallel for
-    for (int y = 0; y < height; y++) {
-        uint8_t *row = buffer + y * row_padded; // Pointer to the current row in the buffer
-        #pragma omp parallel for
+    // Local buffer for the rows to be written
+    uint8_t *local_image = (uint8_t *)malloc(row_padded * (end_row - start_row));
+
+    // Write pixel data with padding
+    for (int y = start_row; y < end_row; y++) {
         for (int x = 0; x < width; x++) {
             uint8_t red = image[(y * width + x) * 3 + 0];   // Red
             uint8_t green = image[(y * width + x) * 3 + 1]; // Green
             uint8_t blue = image[(y * width + x) * 3 + 2];  // Blue
 
-            row[x * 3 + 0] = blue;   // B
-            row[x * 3 + 1] = green;  // G
-            row[x * 3 + 2] = red;    // R
+            int local_index = (y - start_row) * row_padded + x * 3;
+            local_image[local_index] = blue;
+            local_image[local_index + 1] = green;
+            local_image[local_index + 2] = red;
         }
-
-        // Add padding at the end of the row
-        #pragma omp pararell for
+        // Add padding to the end of the row
         for (int p = 0; p < padding; p++) {
-            row[width * 3 + p] = 0;
+            local_image[(y - start_row) * row_padded + width * 3 + p] = 0;
         }
     }
 
-    // Write the buffer to the file
-    fwrite(buffer, row_padded, height, file);
+    // Gather all the rows into the file (process 0 handles the file writing)
+    if (world_rank == 0) {
+        // Write the rows from rank 0
+        fwrite(local_image, 1, row_padded * (end_row - start_row), file);
 
-    // Free buffer and close the file
-    free(buffer);
-    fclose(file);
+        // Receive the rows from other processes and write them
+        for (int i = 1; i < world_size; i++) {
+            int rows_to_receive = rows_per_process + (i < remaining_rows ? 1 : 0);
+            MPI_Recv(local_image, row_padded * rows_to_receive, MPI_UNSIGNED_CHAR, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            fwrite(local_image, 1, row_padded * rows_to_receive, file);
+        }
 
-    printf("Image saved to %s\n", filename);
+        // Close the file after writing all data
+        fclose(file);
+        printf("Image saved to %s\n", filename);
+    } else {
+        // Send the local image data to rank 0
+        MPI_Send(local_image, row_padded * (end_row - start_row), MPI_UNSIGNED_CHAR, 0, 0, MPI_COMM_WORLD);
+    }
+
+    // Free local image buffer
+    free(local_image);
+
 }
 
 
 
 
 int main (int argc, char** argv){
+
+    
+
 
     FilterOptions *flags = malloc(sizeof(FilterOptions));
     if (arg_parser(argc, argv, flags)!=0){
@@ -640,11 +699,15 @@ int main (int argc, char** argv){
         return 1;
     }
 
-		    
+
+    // Inicializar MPI
+	MPI_Init(NULL, NULL); 
     unsigned char *image_w_filter = (unsigned char *)malloc(width * height * 3);
     process_image(flags, image_name, image, image_w_filter, width, height, channels);
     
 
+    
+    MPI_Finalize(); //Finalizar mpi
     // Liberar memoria
     stbi_image_free(image);
     free(image_w_filter);
