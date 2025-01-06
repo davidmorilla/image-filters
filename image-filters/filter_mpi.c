@@ -636,19 +636,20 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
 
     // Write pixel data with padding
     for (int y = start_row; y < end_row; y++) {
+        uint8_t *row = local_image + (y-start_row) * row_padded; // Pointer to the current row in the buffer
         for (int x = 0; x < width; x++) {
             uint8_t red = image[(y * width + x) * 3 + 0];   // Red
             uint8_t green = image[(y * width + x) * 3 + 1]; // Green
             uint8_t blue = image[(y * width + x) * 3 + 2];  // Blue
 
-            int local_index = (y - start_row) * row_padded + x * 3;
-            local_image[local_index] = blue;
-            local_image[local_index + 1] = green;
-            local_image[local_index + 2] = red;
+            
+            local_image[x*3] = blue;
+            local_image[x*3 + 1] = green;
+            local_image[x*3 + 2] = red;
         }
         // Add padding to the end of the row
         for (int p = 0; p < padding; p++) {
-            local_image[(y - start_row) * row_padded + width * 3 + p] = 0;
+            row[width * 3 + p] = 0;
         }
     }
 
