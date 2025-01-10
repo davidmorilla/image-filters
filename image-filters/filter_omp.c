@@ -590,7 +590,7 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
     }
 
     // Fill the buffer in parallel
-    #pragma omp parallel for
+    #pragma omp parallel for 
     for (int y = 0; y < height; y++) {
         uint8_t *row = buffer + y * row_padded; // Pointer to the current row in the buffer
         #pragma omp parallel for
@@ -625,6 +625,8 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
 
 
 int main (int argc, char** argv){
+
+    omp_set_num_threads(8);
 
     FilterOptions *flags = malloc(sizeof(FilterOptions));
     if (arg_parser(argc, argv, flags)!=0){

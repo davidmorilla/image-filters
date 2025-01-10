@@ -627,10 +627,7 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
     //Padding
     int row_padded = (width * 3 + 3) & (~3);
     int padding = row_padded - width * 3;
-
-        //Local data size
-    int local_data_size = local_rows * row_padded; // Datos locales a escribir (incluyendo padding)
-    MPI_Offset local_offset = sizeof(BMPFileHeader) + sizeof(BMPDIBHeader) + start_row * row_padded;
+    
 
     // Abrir el archivo BMP en modo paralelo
     MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &file);
@@ -660,22 +657,23 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
         MPI_File_write_at(file, 0, &fileHeader, sizeof(BMPFileHeader), MPI_BYTE, &status);
         MPI_File_write_at(file, sizeof(BMPFileHeader), &dibHeader, sizeof(BMPDIBHeader), MPI_BYTE, &status);
     }
-
-
-    // Sincronizar procesos después de escribir los encabezados
     MPI_Barrier(MPI_COMM_WORLD);
-    
-    // Escribir datos de la imagen en paralelo
-    unsigned char *row_with_padding = (unsigned char *)malloc(row_padded);
 
+    int local_data_size = local_rows * row_padded; // Datos locales a escribir (incluyendo padding)
+    MPI_Offset local_offset = sizeof(BMPFileHeader) + sizeof(BMPDIBHeader) + start_row * row_padded;
+
+    // Crear un buffer único para todas las filas locales
+    unsigned char *local_buffer = (unsigned char *)malloc(local_data_size);
     for (int y = 0; y < local_rows; y++) {
-        memcpy(row_with_padding, &local_image[y * width * channels], width * channels); // Copiar datos de la fila
-        memset(row_with_padding + width * channels, 0, padding);                       // Agregar padding
-        MPI_File_write_at(file, local_offset + y * row_padded, row_with_padding, row_padded, MPI_BYTE, &status);
+        memcpy(&local_buffer[y * row_padded], &local_image[y * width * channels], width * channels); // Copiar datos de la fila
+        memset(&local_buffer[y * row_padded + width * channels], 0, padding); // Agregar padding
     }
-    free(row_with_padding);
+    
+    
+    MPI_File_write_at_all(file, local_offset, local_buffer, local_data_size, MPI_BYTE, &status);
 
-    // Cerrar el archivo BMP
+    // Liberar memoria
+    free(local_buffer);
     MPI_File_close(&file);
 
     if (world_rank == 0) {
@@ -688,10 +686,7 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
 
 int main (int argc, char** argv){
 
-    MPI_Init(NULL, NULL);
-    int world_rank, world_size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    
 
     FilterOptions *flags = malloc(sizeof(FilterOptions));
     if (arg_parser(argc, argv, flags)!=0){
@@ -703,7 +698,6 @@ int main (int argc, char** argv){
     char * image_name = argv[1];
     unsigned char* image = NULL;
 
-    if (world_rank == 0) {
         image = stbi_load(image_name, &width, &height, &channels, 3);
         // Error cargando la imagen
         if (image == NULL || channels != 3) {
@@ -711,23 +705,18 @@ int main (int argc, char** argv){
             MPI_Finalize();
             return 1;
         }
-    }
 
-    // Broadcast the filter options to all processes
-    MPI_Bcast(flags, sizeof(FilterOptions), MPI_BYTE, 0, MPI_COMM_WORLD);
-
-    // Broadcast the image dimensions to all processes
-    MPI_Bcast(&width, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&height, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&channels, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     // Broadcast the image data to all processes
-    if (world_rank != 0) {
         image = (unsigned char *)malloc(width * height * channels);
-    }
-    MPI_Bcast(image, width * height * channels, MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
+
 
     unsigned char *image_w_filter = (unsigned char *)malloc(width * height * 3);
+
+    MPI_Init(NULL, NULL);
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
     process_image(flags, image_name, image, image_w_filter, width, height, channels, world_rank, world_size);
 

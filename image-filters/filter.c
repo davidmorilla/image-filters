@@ -494,6 +494,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
 	    }
 
 
+
 	    width = new_width;
 	    height = new_height;
 	    break;

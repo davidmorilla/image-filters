@@ -469,7 +469,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
         unsigned char *local_image = (unsigned char *)malloc(local_rows * new_width * channels);
 
         // Interpolación bilineal paralela
-        #pragma omp parallel for collapse(2)
+        #pragma omp parallel for collapse(2) schedule(guided, 8)
         for (int y = 0; y < local_rows; y++) {
             for (int x = 0; x < new_width; x++) {
                 float gx = x / flags->resize_factor;
@@ -483,7 +483,7 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
                 int gxi1 = (gxi + 1 < width) ? gxi + 1 : gxi;
                 int gyi1 = (gyi + 1 < height) ? gyi + 1 : gyi;
 
-                #pragma omp parallel for
+               
                 for (int c = 0; c < channels; c++) {
                     unsigned char top_left = image[(gyi * width + gxi) * channels + c];
                     unsigned char top_right = image[(gyi * width + gxi1) * channels + c];
@@ -627,10 +627,7 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
     //Padding
     int row_padded = (width * 3 + 3) & (~3);
     int padding = row_padded - width * 3;
-
-        //Local data size
-    int local_data_size = local_rows * row_padded; // Datos locales a escribir (incluyendo padding)
-    MPI_Offset local_offset = sizeof(BMPFileHeader) + sizeof(BMPDIBHeader) + start_row * row_padded;
+    
 
     // Abrir el archivo BMP en modo paralelo
     MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &file);
@@ -660,22 +657,25 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
         MPI_File_write_at(file, 0, &fileHeader, sizeof(BMPFileHeader), MPI_BYTE, &status);
         MPI_File_write_at(file, sizeof(BMPFileHeader), &dibHeader, sizeof(BMPDIBHeader), MPI_BYTE, &status);
     }
-
-
-    // Sincronizar procesos después de escribir los encabezados
     MPI_Barrier(MPI_COMM_WORLD);
-    
-    // Escribir datos de la imagen en paralelo
-    unsigned char *row_with_padding = (unsigned char *)malloc(row_padded);
-    
-    for (int y = 0; y < local_rows; y++) {
-        memcpy(row_with_padding, &local_image[y * width * channels], width * channels); // Copiar datos de la fila
-        memset(row_with_padding + width * channels, 0, padding);                       // Agregar padding
-        MPI_File_write_at(file, local_offset + y * row_padded, row_with_padding, row_padded, MPI_BYTE, &status);
-    }
-    free(row_with_padding);
 
-    // Cerrar el archivo BMP
+    int local_data_size = local_rows * row_padded; // Datos locales a escribir (incluyendo padding)
+    MPI_Offset local_offset = sizeof(BMPFileHeader) + sizeof(BMPDIBHeader) + start_row * row_padded;
+
+    // Crear un buffer único para todas las filas locales
+    unsigned char *local_buffer = (unsigned char *)malloc(local_data_size);
+
+    #pragma omp parallel for schedule(guided, 8)
+    for (int y = 0; y < local_rows; y++) {
+        memcpy(&local_buffer[y * row_padded], &local_image[y * width * channels], width * channels); // Copiar datos de la fila
+        memset(&local_buffer[y * row_padded + width * channels], 0, padding); // Agregar padding
+    }
+    
+    
+    MPI_File_write_at_all(file, local_offset, local_buffer, local_data_size, MPI_BYTE, &status);
+
+    // Liberar memoria
+    free(local_buffer);
     MPI_File_close(&file);
 
     if (world_rank == 0) {
