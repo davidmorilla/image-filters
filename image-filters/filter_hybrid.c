@@ -448,68 +448,120 @@ void process_image (FilterOptions *flags, char * image_name, unsigned char* imag
         free(image_edge);
      break;
      case 10: // Resizing using bilinear interpolation
+        if (flags->resize_factor <= 0 || flags->resize_factor > 5) {
+            fprintf(stderr, "Error: Resizing factor must be in the range (0 < n <= 5).\n");
+            break;
+	    }
+
+	    // Calculate new dimensions
+	    int new_width = (int)(width * flags->resize_factor);
+	    int new_height = (int)(height * flags->resize_factor);
+	    //image_w_filter= (unsigned char *)malloc(new_width * new_height * 3);
         
 
-	    if (flags->resize_factor <= 0 || flags->resize_factor > 5) {
-            
-                fprintf(stderr, "Error: Resizing factor must be in the range (0 < n <= 5).\n");
-            
-            break;
+        if (world_rank == 0) {
+            image_w_filter = (unsigned char*)malloc(new_width * new_height * 3);
         }
 
+        // Calculate the number of rows each process will handle
+        int rows_per_process = new_height / world_size;
 
-        // Calcular nuevas dimensiones
-        int new_width = (int)(width * flags->resize_factor);
-        int new_height = (int)(height * flags->resize_factor);
-        int rows_per_proc = new_height / world_size;
-        int extra_rows = new_height % world_size;
-        int local_rows = rows_per_proc + (world_rank < extra_rows ? 1 : 0);
-        int start_row = world_rank * rows_per_proc + (world_rank < extra_rows ? world_rank : extra_rows);
+        // Calculate the starting and ending row for each process
+        int start_row = world_rank * rows_per_process;
+        int end_row = (world_rank + 1) * rows_per_process;
 
-        unsigned char *local_image = (unsigned char *)malloc(local_rows * new_width * channels);
-
-        // Interpolación bilineal paralela
-        #pragma omp parallel for collapse(2) schedule(guided, 8)
-        for (int y = 0; y < local_rows; y++) {
+        // Ensure the last process ends at the last row
+        if (world_rank == world_size - 1) {
+            end_row = new_height;
+        }
+        
+        // Allocate local buffer for each process
+        unsigned char* local_image;
+        if (world_rank == world_size - 1) {
+            local_image = (unsigned char*)malloc(new_width * (rows_per_process+ new_height%world_size) * 3);
+        } else {
+            local_image = (unsigned char*)malloc(new_width * rows_per_process * 3);
+        }
+        
+	    // Perform bilinear interpolation
+        #pragma omp parallel for collapse(2) schedule(guided, 4)
+	    for (int y = start_row; y < end_row; y++) {
             for (int x = 0; x < new_width; x++) {
+                // Map the pixel in the resized image to the original image
                 float gx = x / flags->resize_factor;
-                float gy = (y + start_row) / flags->resize_factor;
+                float gy = y / flags->resize_factor;
 
+                // Get the integer and fractional parts
                 int gxi = (int)gx;
                 int gyi = (int)gy;
                 float frac_x = gx - gxi;
                 float frac_y = gy - gyi;
 
+                // Ensure indices are within bounds
                 int gxi1 = (gxi + 1 < width) ? gxi + 1 : gxi;
                 int gyi1 = (gyi + 1 < height) ? gyi + 1 : gyi;
 
-               
                 for (int c = 0; c < channels; c++) {
+                    // Fetch the four neighboring pixels
                     unsigned char top_left = image[(gyi * width + gxi) * channels + c];
                     unsigned char top_right = image[(gyi * width + gxi1) * channels + c];
                     unsigned char bottom_left = image[(gyi1 * width + gxi) * channels + c];
                     unsigned char bottom_right = image[(gyi1 * width + gxi1) * channels + c];
 
+                    // Perform bilinear interpolation
                     float top = top_left + frac_x * (top_right - top_left);
                     float bottom = bottom_left + frac_x * (bottom_right - bottom_left);
                     float value = top + frac_y * (bottom - top);
 
-                    local_image[(y * new_width + x) * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
+                    // Assign the interpolated value to the new image
+                    local_image[(y - start_row) * new_width * channels + x * channels + c] = (unsigned char)fminf(fmaxf(value, 0.0f), 255.0f);
                 }
+            }
+	    }
+
+    /* int *recvcounts = NULL;
+        int *displs = NULL;
+
+        if (world_rank == 0) {
+            recvcounts = (int *)malloc(world_size * sizeof(int));
+            displs = (int *)malloc(world_size * sizeof(int));
+
+            int total_rows = 0;
+            for (int i = 0; i < world_size; i++) {
+                if (i == world_size - 1) {
+                    recvcounts[i] = (rows_per_process + new_height % world_size) * new_width * 3;
+                } else {
+                    recvcounts[i] = rows_per_process * new_width * 3;
+                }
+                displs[i] = total_rows;
+                total_rows += recvcounts[i];
             }
         }
 
-        // Guardar la imagen en paralelo usando save_as_bmp_mpi
+        MPI_Gatherv(local_image, new_width * (end_row - start_row) * 3, MPI_UNSIGNED_CHAR, 
+                image_w_filter, recvcounts, displs, MPI_UNSIGNED_CHAR, 
+                0, MPI_COMM_WORLD);
+
+        // Free local image buffer
+        if (world_rank == 0) {
+            free(recvcounts);
+            free(displs);
+        } */
+
+        
+        width = new_width;
+	    height = new_height;
+        
         char image_w_filter_name[100];
         snprintf(image_w_filter_name, sizeof(image_w_filter_name), "%s_filter_%s", image_name, flags->filter_name);
         save_as_bmp_mpi(image_w_filter_name, local_image, new_width, new_height, channels, world_rank, world_size);
-
         free(local_image);
-        width = new_width;
-        height = new_height;
-        break;
+        
+ 
+	    break; 
             
     }
+
     if (flags->filter != 10){
         
         char image_w_filter_name[100];
@@ -612,6 +664,7 @@ void save_as_bmp(const char *filename, uint8_t *image, int width, int height) {
     printf("Image saved to %s\n", filename);
 }
 
+
 void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width, int height, int channels, int world_rank, int world_size) {
     // Variables MPI
     MPI_File file;
@@ -619,10 +672,23 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
 
 
     // Rows per process
-    int rows_per_proc = height / world_size;
+   /*  int rows_per_proc = height / world_size;
     int extra_rows = height % world_size;
     int local_rows = rows_per_proc + (world_rank < extra_rows ? 1 : 0);
-    int start_row = world_rank * rows_per_proc + (world_rank < extra_rows ? world_rank : extra_rows);
+    int start_row = world_rank * rows_per_proc + (world_rank < extra_rows ? world_rank : extra_rows);*/
+
+    // Calculate the number of rows each process will handle
+        int rows_per_process = height / world_size;
+
+        // Calculate the starting and ending row for each process
+        int start_row = world_rank * rows_per_process;
+        int end_row = (world_rank + 1) * rows_per_process;
+        int local_rows = end_row - start_row;
+
+        // Ensure the last process ends at the last row
+        if (world_rank == world_size - 1) {
+            end_row = height;
+        }
 
     //Padding
     int row_padded = (width * 3 + 3) & (~3);
@@ -664,8 +730,7 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
 
     // Crear un buffer único para todas las filas locales
     unsigned char *local_buffer = (unsigned char *)malloc(local_data_size);
-
-    #pragma omp parallel for schedule(guided, 8)
+    #pragma omp parallel for schedule(guided, 4)
     for (int y = 0; y < local_rows; y++) {
         memcpy(&local_buffer[y * row_padded], &local_image[y * width * channels], width * channels); // Copiar datos de la fila
         memset(&local_buffer[y * row_padded + width * channels], 0, padding); // Agregar padding
@@ -688,11 +753,6 @@ void save_as_bmp_mpi(const char *filename, unsigned char *local_image, int width
 
 int main (int argc, char** argv){
 
-    MPI_Init(NULL, NULL);
-    int world_rank, world_size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-
     FilterOptions *flags = malloc(sizeof(FilterOptions));
     if (arg_parser(argc, argv, flags)!=0){
         MPI_Finalize();
@@ -703,7 +763,6 @@ int main (int argc, char** argv){
     char * image_name = argv[1];
     unsigned char* image = NULL;
 
-    if (world_rank == 0) {
         image = stbi_load(image_name, &width, &height, &channels, 3);
         // Error cargando la imagen
         if (image == NULL || channels != 3) {
@@ -711,33 +770,26 @@ int main (int argc, char** argv){
             MPI_Finalize();
             return 1;
         }
-    }
 
-    // Broadcast the filter options to all processes
-    MPI_Bcast(flags, sizeof(FilterOptions), MPI_BYTE, 0, MPI_COMM_WORLD);
-
-    // Broadcast the image dimensions to all processes
-    MPI_Bcast(&width, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&height, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&channels, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     // Broadcast the image data to all processes
-    if (world_rank != 0) {
-        image = (unsigned char *)malloc(width * height * channels);
-    }
-    MPI_Bcast(image, width * height * channels, MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
+       // image = (unsigned char *)malloc(width * height * channels);
 
-    unsigned char *image_w_filter = (unsigned char *)malloc(width * height * 3);
+
+    unsigned char *image_w_filter = (unsigned char *)malloc( width * height * 3);
+
+    MPI_Init(NULL, NULL);
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
     process_image(flags, image_name, image, image_w_filter, width, height, channels, world_rank, world_size);
-
-    if (world_rank == 0) {
+    MPI_Finalize();
         // Liberar memoria
-        stbi_image_free(image);
-    }
+    stbi_image_free(image);
     free(image_w_filter);
     free(flags);
 
-    MPI_Finalize();
+    
     return 0;
 }
